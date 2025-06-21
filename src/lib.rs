@@ -22,6 +22,10 @@ pub struct Config {
     /// Invert the sense of matching, to select non-matching lines
     #[arg(short='v', long, help = "Invert the sense of matching")]
     pub invert_match: bool,
+
+    /// Only show filenames of files that contain matches
+    #[arg(short='l', long, help = "Print only the names of files with matches")]
+    pub files_with_matches: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -33,7 +37,7 @@ pub struct Match<'a> {
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let path = Path::new(&config.path);
 
-    let highlight_regex = if !config.invert_match {
+    let highlight_regex = if !config.files_with_matches && !config.invert_match {
         Some(
             RegexBuilder::new(&config.query)
                 .case_insensitive(config.ignore_case)
@@ -72,7 +76,7 @@ fn process_path(
     file_path: &Path,
     config: &Config,
     highlight_regex: Option<&Regex>,
-    print_filename: bool,
+    _is_dir_context: bool,
 ) -> Result<(), Box<dyn Error>> {
     let contents = match fs::read_to_string(file_path) {
         Ok(c) => c,
@@ -90,7 +94,14 @@ fn process_path(
         return Ok(());
     }
 
-    if print_filename {
+    if config.files_with_matches {
+        println!("{}", file_path.display().to_string().cyan());
+        return Ok(());
+    }
+
+    let print_filename_prefix = _is_dir_context;
+
+    if print_filename_prefix {
         println!("{}:", file_path.display().to_string().cyan());
     }
 
@@ -107,12 +118,13 @@ fn process_path(
         );
     }
     
-    if print_filename {
+    if print_filename_prefix {
         println!();
     }
 
     Ok(())
 }
+
 
 
 
