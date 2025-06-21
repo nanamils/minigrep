@@ -1,0 +1,9 @@
+[package]
+name = "minigrep"
+version = "0.1.0"
+edition = "2024"
+description = """A simple grep clone written in Rust"""
+
+[dependencies]
+regex = "1"
+clap = { version = "4.4", features = ["derive"] }
