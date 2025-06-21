@@ -1,3 +1,4 @@
+use colored::*;
 use clap::Parser;
 use regex::RegexBuilder;
 use std::{fs, error::Error};
@@ -18,35 +19,55 @@ pub struct Config {
     pub ignore_case: bool,
 }
 
-
-
-pub fn search<'a>(query: &str, contents: &'a str, ignore_case: bool) -> Vec<&'a str> {
-    let regex = RegexBuilder::new(query)
-        .case_insensitive(ignore_case)
-        .build()
-        .expect("Invalid regex pattern");
-
-    contents
-        .lines()
-        .filter(|line| regex.is_match(line))
-        .collect()
+#[derive(Debug, PartialEq)]
+pub struct Match<'a> {
+    pub line_number: usize,
+    pub content: &'a str,
 }
-
-
-
 
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let contents = fs::read_to_string(config.file_path)?;
 
-    let results = search(&config.query, &contents, config.ignore_case);
+    let results = search(&config.query, &contents, config.ignore_case)?;
 
-    for line in results {
-        println!("{line}");
+    let highlight_regex = RegexBuilder::new(&config.query)
+    .case_insensitive(config.ignore_case)
+    .build()?;
+
+    let colored_query = config.query.red().bold().to_string();
+
+    for line_match in results {
+        let highlighted_line = highlight_regex.replace_all(
+            line_match.content,
+            colored_query.as_str()
+        );
+        
+        println!("{:}: {}", line_match.line_number.to_string().green(), highlighted_line);
     }
 
     Ok(())
 }
 
+pub fn search<'a>(
+    query: &str,
+    contents: &'a str,
+    ignore_case: bool,
+) -> Result<Vec<Match<'a>>, Box<dyn Error>> {
+    let regex = RegexBuilder::new(query)
+        .case_insensitive(ignore_case)
+        .build()?;
+    let matches = contents
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| regex.is_match(line))
+        .map(|(i, line)| Match {
+            line_number: i + 1,
+            content: line,
+        })
+        .collect();
+
+    Ok(matches)
+}
 
 #[cfg(test)]
 mod tests {
@@ -60,7 +81,11 @@ Rust:
 safe, fast, productive.
 Pick three.
 Duct tape.";
-        assert_eq!(vec!["safe, fast, productive."], search(query, contents, false));
+        
+        let expected = vec![
+            Match { line_number: 2, content: "safe, fast, productive." }
+        ];
+        assert_eq!(expected, search(query, contents, false).unwrap());
     }
 
     #[test]
@@ -71,7 +96,12 @@ Rust:
 safe, fast, productive.
 Pick three.
 Trust me.";
-        assert_eq!(vec!["Rust:", "Trust me."], search(query, contents, true));
+
+        let expected = vec![
+            Match { line_number: 1, content: "Rust:" },
+            Match { line_number: 4, content: "Trust me." },
+        ];
+        assert_eq!(expected, search(query, contents, true).unwrap());
     }
 
     #[test]
@@ -83,6 +113,10 @@ safe, fast, productive.
 Pick three.
 Four:";
 
-        assert_eq!(vec!["Rust:", "Four:"], search(query, contents, false));
+        let expected = vec![
+            Match { line_number: 1, content: "Rust:" },
+            Match { line_number: 4, content: "Four:" },
+        ];
+        assert_eq!(expected, search(query, contents, false).unwrap());
     }
 }
