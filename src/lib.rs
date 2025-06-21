@@ -20,12 +20,16 @@ pub struct Config {
     pub ignore_case: bool,
 
     /// Invert the sense of matching, to select non-matching lines
-    #[arg(short='v', long, help = "Invert the sense of matching")]
+    #[arg(short='v', long, help = "Invert the sense of matching", conflicts_with = "only_matching")]
     pub invert_match: bool,
 
     /// Only show filenames of files that contain matches
     #[arg(short='l', long, help = "Print only the names of files with matches")]
     pub files_with_matches: bool,
+
+    /// Print only the matched (non-empty) parts of a matching line
+    #[arg(short, long, help = "Print only the matched parts of a line")]
+    pub only_matching: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -37,7 +41,7 @@ pub struct Match<'a> {
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let path = Path::new(&config.path);
 
-    let highlight_regex = if !config.files_with_matches && !config.invert_match {
+    let main_regex = if !config.files_with_matches {
         Some(
             RegexBuilder::new(&config.query)
                 .case_insensitive(config.ignore_case)
@@ -48,9 +52,9 @@ pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     };
 
     if path.is_dir() {
-        process_directory(path, &config, highlight_regex.as_ref())?;
+        process_directory(path, &config, main_regex.as_ref())?;
     } else if path.is_file() {
-        process_path(path, &config, highlight_regex.as_ref(), false)?;
+        process_path(path, &config, main_regex.as_ref(), false)?;
     } else {
         return Err(format!("'{}' is not a valid file or directory.", config.path).into());
     }
@@ -75,7 +79,7 @@ fn process_directory(
 fn process_path(
     file_path: &Path,
     config: &Config,
-    highlight_regex: Option<&Regex>,
+    main_regex: Option<&Regex>,
     _is_dir_context: bool,
 ) -> Result<(), Box<dyn Error>> {
     let contents = match fs::read_to_string(file_path) {
@@ -83,42 +87,59 @@ fn process_path(
         Err(_) => return Ok(()),
     };
 
-    let results = search(
-        &config.query,
-        &contents,
-        config.ignore_case,
-        config.invert_match,
-    )?;
-
-    if results.is_empty() {
-        return Ok(());
-    }
-
+    // -l 标志的优先级最高
     if config.files_with_matches {
-        println!("{}", file_path.display().to_string().cyan());
+        let results = search(&config.query, &contents, config.ignore_case, config.invert_match)?;
+        if !results.is_empty() {
+            println!("{}", file_path.display().to_string().cyan());
+        }
         return Ok(());
-    }
-
-    let print_filename_prefix = _is_dir_context;
-
-    if print_filename_prefix {
-        println!("{}:", file_path.display().to_string().cyan());
-    }
-
-    let colored_query = config.query.red().bold().to_string();
-    for line_match in results {
-        let line_to_print = if let Some(re) = highlight_regex {
-            re.replace_all(line_match.content, colored_query.as_str()).to_string()
-        } else {
-            line_match.content.to_string()
-        };
-        println!("{} {}", 
-            format!("{: >4}:", line_match.line_number).green(), 
-            line_to_print
-        );
     }
     
-    if print_filename_prefix {
+    // 如果不是 -l 模式，我们可以直接使用 main_regex 来查找匹配
+    // 这避免了在 search 和 process_path 中重复编译 regex
+    let re = main_regex.unwrap(); // 在非-l模式下，main_regex一定是Some
+    
+    let print_filename_prefix = _is_dir_context;
+    let mut printed_filename = false;
+
+    for (i, line) in contents.lines().enumerate() {
+        let line_number = i + 1;
+
+        if config.only_matching {
+            // --- -o 模式的逻辑 ---
+            for mat in re.find_iter(line) {
+                if !printed_filename && print_filename_prefix {
+                    println!("{}:", file_path.display().to_string().cyan());
+                    printed_filename = true;
+                }
+                println!("{} {}",
+                    format!("{: >4}:", line_number).green(),
+                    mat.as_str().red().bold()
+                );
+            }
+        } else {
+            // --- 正常和 -v 模式的逻辑 ---
+            let is_match = re.is_match(line);
+            if (is_match && !config.invert_match) || (!is_match && config.invert_match) {
+                 if !printed_filename && print_filename_prefix {
+                    println!("{}:", file_path.display().to_string().cyan());
+                    printed_filename = true;
+                }
+                let line_to_print = if !config.invert_match {
+                    re.replace_all(line, config.query.red().bold().to_string().as_str()).to_string()
+                } else {
+                    line.to_string()
+                };
+                println!("{} {}", 
+                    format!("{: >4}:", line_number).green(), 
+                    line_to_print
+                );
+            }
+        }
+    }
+
+    if printed_filename {
         println!();
     }
 
