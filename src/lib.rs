@@ -1,6 +1,6 @@
 use colored::*;
 use clap::Parser;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use std::{error::Error, fs, path::Path};
 use walkdir::WalkDir;
 
@@ -18,6 +18,10 @@ pub struct Config {
     /// Perform a case-insensitive search
     #[arg(short, long, help = "Case-insensitive search")]
     pub ignore_case: bool,
+
+    /// Invert the sense of matching, to select non-matching lines
+    #[arg(short='v', long, help = "Invert the sense of matching")]
+    pub invert_match: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -28,48 +32,21 @@ pub struct Match<'a> {
 
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let path = Path::new(&config.path);
-    let highlight_regex = RegexBuilder::new(&config.query)
-        .case_insensitive(config.ignore_case)
-        .build()?;
-    let colored_query = config.query.red().bold().to_string();
+
+    let highlight_regex = if !config.invert_match {
+        Some(
+            RegexBuilder::new(&config.query)
+                .case_insensitive(config.ignore_case)
+                .build()?,
+        )
+    } else {
+        None
+    };
 
     if path.is_dir() {
-        for entry in WalkDir::new(path).min_depth(1).into_iter().filter_map(|e| e.ok()) {
-            if entry.file_type().is_file() {
-                let file_path = entry.path();
-                if let Ok(contents) = fs::read_to_string(file_path) {
-                    let results = search(&config.query, &contents, config.ignore_case)?;
-                    if !results.is_empty() {
-                        println!("{}:", file_path.display().to_string().cyan());
-                        for line_match in results {
-                            let highlighted_line = highlight_regex.replace_all(
-                                line_match.content, 
-                                colored_query.as_str()
-                            );
-
-                            println!("{} {}", 
-                                format!("{: >4}:", line_match.line_number).green(), 
-                                highlighted_line
-                            );
-                        }
-                        println!();
-                    }
-                }
-            }
-        }
+        process_directory(path, &config, highlight_regex.as_ref())?;
     } else if path.is_file() {
-        let contents = fs::read_to_string(path)?;
-        let results = search(&config.query, &contents, config.ignore_case)?;
-        for line_match in results {
-            let highlighted_line = highlight_regex.replace_all(
-                line_match.content, 
-                colored_query.as_str()
-            );
-            println!("{} {}", 
-                format!("{: >4}:", line_match.line_number).green(), 
-                highlighted_line
-            );
-        }
+        process_path(path, &config, highlight_regex.as_ref(), false)?;
     } else {
         return Err(format!("'{}' is not a valid file or directory.", config.path).into());
     }
@@ -78,18 +55,87 @@ pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
 }
 
 
+fn process_directory(
+    dir_path: &Path,
+    config: &Config,
+    highlight_regex: Option<&Regex>,
+) -> Result<(), Box<dyn Error>> {
+    for entry in WalkDir::new(dir_path).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            process_path(entry.path(), config, highlight_regex, true)?;
+        }
+    }
+    Ok(())
+}
+
+fn process_path(
+    file_path: &Path,
+    config: &Config,
+    highlight_regex: Option<&Regex>,
+    print_filename: bool,
+) -> Result<(), Box<dyn Error>> {
+    let contents = match fs::read_to_string(file_path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    let results = search(
+        &config.query,
+        &contents,
+        config.ignore_case,
+        config.invert_match,
+    )?;
+
+    if results.is_empty() {
+        return Ok(());
+    }
+
+    if print_filename {
+        println!("{}:", file_path.display().to_string().cyan());
+    }
+
+    let colored_query = config.query.red().bold().to_string();
+    for line_match in results {
+        let line_to_print = if let Some(re) = highlight_regex {
+            re.replace_all(line_match.content, colored_query.as_str()).to_string()
+        } else {
+            line_match.content.to_string()
+        };
+        println!("{} {}", 
+            format!("{: >4}:", line_match.line_number).green(), 
+            line_to_print
+        );
+    }
+    
+    if print_filename {
+        println!();
+    }
+
+    Ok(())
+}
+
+
+
 pub fn search<'a>(
     query: &str,
     contents: &'a str,
     ignore_case: bool,
+    invert_match: bool,
 ) -> Result<Vec<Match<'a>>, Box<dyn Error>> {
     let regex = RegexBuilder::new(query)
         .case_insensitive(ignore_case)
         .build()?;
+
     let matches = contents
         .lines()
         .enumerate()
-        .filter(|(_, line)| regex.is_match(line))
+        .filter(|(_, line)| {
+            if invert_match {
+                !regex.is_match(line)
+            } else {
+                regex.is_match(line)
+            }
+        })
         .map(|(i, line)| Match {
             line_number: i + 1,
             content: line,
@@ -98,6 +144,7 @@ pub fn search<'a>(
 
     Ok(matches)
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -115,7 +162,7 @@ Duct tape.";
         let expected = vec![
             Match { line_number: 2, content: "safe, fast, productive." }
         ];
-        assert_eq!(expected, search(query, contents, false).unwrap());
+        assert_eq!(expected, search(query, contents, false, false).unwrap());
     }
 
     #[test]
@@ -131,7 +178,7 @@ Trust me.";
             Match { line_number: 1, content: "Rust:" },
             Match { line_number: 4, content: "Trust me." },
         ];
-        assert_eq!(expected, search(query, contents, true).unwrap());
+        assert_eq!(expected, search(query, contents, true, false).unwrap());
     }
 
     #[test]
@@ -147,6 +194,40 @@ Four:";
             Match { line_number: 1, content: "Rust:" },
             Match { line_number: 4, content: "Four:" },
         ];
-        assert_eq!(expected, search(query, contents, false).unwrap());
+        assert_eq!(expected, search(query, contents, false, false).unwrap());
+    }
+
+
+    #[test]
+    fn case_sensitive_invert() {
+        let query = "duct";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Duct tape.";
+        
+        let expected = vec![
+            Match { line_number: 1, content: "Rust:" },
+            Match { line_number: 3, content: "Pick three." },
+            Match { line_number: 4, content: "Duct tape." },
+        ];
+        assert_eq!(expected, search(query, contents, false, true).unwrap());
+    }
+
+    #[test]
+    fn case_insensitive_invert() {
+        let query = "rUsT";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Trust me.";
+
+        let expected = vec![
+            Match { line_number: 2, content: "safe, fast, productive." },
+            Match { line_number: 3, content: "Pick three." },
+        ];
+        assert_eq!(expected, search(query, contents, true, true).unwrap());
     }
 }
