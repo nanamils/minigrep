@@ -3,9 +3,7 @@ use clap::Parser;
 use minigrep::Config;
 
 fn main() {
-    let config = Config::parse();
-
-    if let Err(e) = minigrep::run(config) {
+    if let Err(e) = minigrep::run(Config::parse()) {
         eprintln!("Application error: {e}");
         process::exit(1);
     }

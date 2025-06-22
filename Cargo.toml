@@ -8,4 +8,5 @@ description = """A simple grep clone written in Rust"""
 regex = "1"
 clap = { version = "4.4", features = ["derive"] }
 colored = "3"
+downcast-rs = "2.0.1"
 walkdir = "2"
